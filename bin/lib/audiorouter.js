@@ -58,8 +58,14 @@ class AudioRouter {
 		const r = await this.call('getApplicationInstanceImage', { processID: pid, imageSize: 262244 });
 		return (r && typeof r.image === 'string' && r.image.length > 16) ? r.image : null; // base64 ICO
 	}
-	setVolume(pid, v) { return this.call('setApplicationInstanceVolume', { processID: pid, volume: round2(v) }); }
-	setMute(pid, mute) { return this.call('setApplicationInstanceMute', { processID: pid, mute: !!mute }); }
+	// The server never answers set* calls, so awaiting a reply cost a 2s timeout per app.
+	notify(method, params) {
+		if (!this.ready || !this.ws) return Promise.resolve();
+		try { this.ws.send(JSON.stringify({ id: Math.floor(1e9 * Math.random()), jsonrpc: JSONRPC, method, params })); } catch {}
+		return Promise.resolve();
+	}
+	setVolume(pid, v) { return this.notify('setApplicationInstanceVolume', { processID: pid, volume: round2(v) }); }
+	setMute(pid, mute) { return this.notify('setApplicationInstanceMute', { processID: pid, mute: !!mute }); }
 }
 
 const saneVol = (v) => typeof v === 'number' && isFinite(v) && v >= 0 && v <= 1;
