@@ -15,7 +15,8 @@ const { spawn } = require('child_process');
 const koffi = require('koffi');
 const WebSocket = require('ws');
 const { AudioRouter, baseName, clamp01 } = require('./lib/audiorouter');
-const { decodeIcoToRgba, rgbaToPngBase64 } = require('./lib/icondib');
+const { decodeIcoToRgba, rgbaToPngBase64, duoIconRgba } = require('./lib/icondib');
+const { theme } = require('./lib/theme');
 const { keyImage } = require('./lib/keyimage');
 
 const log = (...a) => { try { console.log(new Date().toISOString(), ...a); } catch {} };
@@ -132,19 +133,20 @@ async function sendAppsToPI(ctx) {
 
 /* ------------------------------------------------------------ Key image */
 const isOn = (ctx) => !!boosted && (owner === ctx || !boostCtx.has(owner));
-const iconCache = new Map(); // exe -> base64 png or null
+const iconCache = new Map(); // exe|duotone colours -> base64 png or null
 const lastImage = new Map(); // context -> data URI last sent
 
-async function iconFor(exe) {
-	const key = baseName(exe);
+// t: key theme; in Duotone the icon is recoloured into the pack's two tones.
+async function iconFor(exe, t) {
+	const key = baseName(exe) + (t.duo ? '|' + t.sec + t.fg : '');
 	if (iconCache.has(key)) return iconCache.get(key);
-	const a = (await ar.listApps()).find((x) => baseName(x.executableFile) === key);
+	const a = (await ar.listApps()).find((x) => baseName(x.executableFile) === baseName(exe));
 	if (!a) return null; // not cached: retry once the app has a session
 	let png = null;
 	try {
 		const ico = await ar.getIcon(a.processID);
 		const dec = ico && decodeIcoToRgba(Buffer.from(ico, 'base64'));
-		if (dec) png = rgbaToPngBase64(dec.width, dec.height, dec.rgba);
+		if (dec) png = rgbaToPngBase64(dec.width, dec.height, t.duo ? duoIconRgba(dec.rgba, t.sec, t.fg) : dec.rgba);
 	} catch (e) { log('icon', e.message); }
 	iconCache.set(key, png);
 	return png;
@@ -155,7 +157,7 @@ async function render(ctx) {
 	if (!s) return;
 	const on = isOn(ctx);
 	const exe = on ? boostedExe : s.target; // ON: show what is actually boosted (also for "focused")
-	const icon = exe ? await iconFor(exe) : null;
+	const icon = exe ? await iconFor(exe, theme(s)) : null;
 	const img = keyImage({ on, icon, step: parseInt(s.step, 10) || DEFAULT_STEP, settings: s });
 	if (lastImage.get(ctx) === img) return;
 	lastImage.set(ctx, img);

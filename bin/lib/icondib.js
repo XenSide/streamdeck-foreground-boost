@@ -61,4 +61,30 @@ function rgbaToPngBase64(width, height, rgba) {
   rgba.copy(png.data);
   return PNG.sync.write(png).toString('base64');
 }
-module.exports = { decodeIcoToRgba, rgbaToPngBase64 };
+const hexRgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+// Duotone Essentials look (same as Volume Controller NEO): split the icon into its two
+// best-separated luminance groups (Otsu) and paint them in the secondary / primary tone.
+function duoIconRgba(rgba, sec, pri) {
+  const S = hexRgb(sec), P = hexRgb(pri), d = Buffer.from(rgba);
+  const L = (i) => (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+  let lo = 1, hi = 0;
+  for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 128) { const l = L(i); lo = Math.min(lo, l); hi = Math.max(hi, l); }
+  const span = Math.max(0.05, hi - lo), lum = (i) => (L(i) - lo) / span, hist = new Array(64).fill(0);
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 128) { hist[Math.min(63, Math.floor(64 * lum(i)))]++; n++; }
+  let best = 0, cut = 0.5, w0 = 0, s0 = 0;
+  const tot = hist.reduce((a, c, k) => a + c * k, 0);
+  for (let k = 0; k < 63; k++) {
+    w0 += hist[k]; s0 += hist[k] * k;
+    const w1 = n - w0;
+    if (!w0 || !w1) continue;
+    const v = w0 * w1 * (s0 / w0 - (tot - s0) / w1) ** 2;
+    if (v > best) { best = v; cut = (k + 1) / 64; }
+  }
+  for (let i = 0; i < d.length; i += 4) {
+    const t = Math.min(1, Math.max(0, (lum(i) - cut) / 0.08 + 0.5)); // soft edge at the cut
+    for (let k = 0; k < 3; k++) d[i + k] = Math.round(S[k] + (P[k] - S[k]) * t);
+  }
+  return d;
+}
+module.exports = { decodeIcoToRgba, rgbaToPngBase64, duoIconRgba };
