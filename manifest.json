@@ -1,0 +1,38 @@
+{
+	"Name": "Foreground Boost",
+	"Version": "0.1.0.0",
+	"Author": "xenside",
+	"Description": "Toggle: the focused app +15, every other app -15. Press again to undo. Bundles VolumeProxy (Foreground.exe) and starts it if it is not already running.",
+	"Category": "Foreground Boost",
+	"CategoryIcon": "imgs/plugin/icon",
+	"Icon": "imgs/plugin/icon",
+	"SDKVersion": 2,
+	"CodePath": "bin/plugin.js",
+	"Nodejs": {
+		"Version": "20"
+	},
+	"Software": {
+		"MinimumVersion": "6.5"
+	},
+	"OS": [
+		{
+			"Platform": "windows",
+			"MinimumVersion": "10"
+		}
+	],
+	"UUID": "com.xenside.foregroundboost",
+	"Actions": [
+		{
+			"UUID": "com.xenside.foregroundboost.toggle",
+			"Name": "Foreground Boost",
+			"Icon": "imgs/actions/boost/icon",
+			"Tooltip": "Toggle: the focused app +15, every other app -15. Press again to undo.",
+			"Controllers": ["Keypad"],
+			"DisableAutomaticStates": true,
+			"States": [
+				{ "Image": "imgs/actions/boost/off" },
+				{ "Image": "imgs/actions/boost/on" }
+			]
+		}
+	]
+}
