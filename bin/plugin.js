@@ -1,7 +1,7 @@
 'use strict';
 /*
  * Foreground Boost - Stream Deck plugin backend (Node 20, CommonJS).
- * Toggle: each key boosts the focused app or a chosen app (+N%, every other app -N%);
+ * Toggle: each key boosts the focused app or a chosen app (volume ×(1+N%), every other app ×(1-N%));
  * one boost at a time, the same key again undoes the delta actually applied. State
  * survives restarts via a lock file. Key images are drawn live (app icon, amount),
  * in the default Stream Deck look or Duotone Essentials colours. Also starts the bundled
@@ -46,18 +46,45 @@ const OpenProcess = kernel32.func('void* __stdcall OpenProcess(uint32, bool, uin
 const CloseHandle = kernel32.func('bool __stdcall CloseHandle(void*)');
 const QueryFullProcessImageNameW = kernel32.func('bool __stdcall QueryFullProcessImageNameW(void*, uint32, _Out_ uint16*, _Inout_ uint32*)');
 
+const PostThreadMessageW = user32.func('bool __stdcall PostThreadMessageW(uint32, uint32, uintptr, intptr)');
+
+function exeOf(pid) {
+	const h = OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, false, pid);
+	if (!h) return '';
+	const buf = new Uint16Array(1024), len = [buf.length];
+	const ok = QueryFullProcessImageNameW(h, 0, buf, len);
+	CloseHandle(h);
+	return ok ? baseName(Buffer.from(buf.buffer, 0, len[0] * 2).toString('utf16le')) : '';
+}
+
 function focused() {
 	const pid = [0];
 	GetWindowThreadProcessId(GetForegroundWindow(), pid);
-	let exe = '';
-	const h = OpenProcess(0x1000 /* PROCESS_QUERY_LIMITED_INFORMATION */, false, pid[0]);
-	if (h) {
-		const buf = new Uint16Array(1024), len = [buf.length];
-		if (QueryFullProcessImageNameW(h, 0, buf, len)) exe = baseName(Buffer.from(buf.buffer, 0, len[0] * 2).toString('utf16le'));
-		CloseHandle(h);
-	}
-	return { pid: pid[0], exe };
+	return { pid: pid[0], exe: exeOf(pid[0]) };
 }
+
+// Browsers/Discord play audio from a child process, not the window's: match the exe too.
+const isApp = (a, f) => a.processID === f.pid || (!!f.exe && baseName(a.executableFile) === f.exe);
+
+// "Focused app" keys show the focused app's icon. fgworker.js hooks EVENT_SYSTEM_FOREGROUND and
+// sleeps in a Windows message loop (no CPU while idle). fgExe = last focused app with an audio
+// session; an app that starts playing later is picked up on the next 3 s render tick.
+let fgFocus = null, fgExe = '', fgPending = false, fgTid = 0;
+async function matchFocus() {
+	if (!fgFocus) return;
+	const a = (await ar.listApps()).find((x) => baseName(x.executableFile) !== PROXY_NAME && isApp(x, fgFocus));
+	fgPending = !a;
+	if (a && a.executableFile !== fgExe) { fgExe = a.executableFile; renderAll(); }
+}
+try {
+	const { Worker } = require('worker_threads');
+	const w = new Worker(path.join(__dirname, 'fgworker.js'), { workerData: { koffi: require.resolve('koffi') } });
+	w.on('message', (m) => { if (m.tid) fgTid = m.tid; else { fgFocus = { pid: m.pid, exe: exeOf(m.pid) }; matchFocus().catch((e) => log('focus', e.message)); } });
+	w.on('error', (e) => log('focus worker', e.message));
+	w.unref();
+	// The worker blocks in GetMessageW; WM_QUIT ends its loop so the plugin can exit.
+	process.on('exit', () => { if (fgTid) PostThreadMessageW(fgTid, 0x12, 0, 0); });
+} catch (e) { log('focus worker', e.message); }
 
 /* ---------------------------------------------------------------- Boost */
 const ar = new AudioRouter(log);
@@ -100,20 +127,21 @@ async function toggleBoost(ctx) {
 async function applyBoost(ctx, apps) {
 	const s = boostCtx.get(ctx) || {};
 	const step = (parseInt(s.step, 10) || DEFAULT_STEP) / 100;
+	const byExe = (exe) => (a) => baseName(a.executableFile) === baseName(exe);
 	let isTarget;
-	if (s.target) {
-		const want = baseName(s.target);
-		isTarget = (a) => baseName(a.executableFile) === want;
-	} else {
-		// Match the exe too: browsers/Discord play audio from a child process, not the window's.
+	if (s.target) isTarget = byExe(s.target);
+	else {
+		// The focused app; if it has no audio, the last focused one that has (what the key shows).
 		const fg = focused();
-		isTarget = (a) => a.processID === fg.pid || (!!fg.exe && baseName(a.executableFile) === fg.exe);
+		isTarget = (a) => isApp(a, fg);
+		if (!apps.some(isTarget) && fgExe) isTarget = byExe(fgExe);
 	}
 	if (!apps.some(isTarget)) { showAlert(ctx); return; } // target app not playing audio
 	boosted = new Map(); owner = ctx;
 	boostedExe = apps.find(isTarget).executableFile;
 	for (const a of apps) {
-		const target = clamp01(a.volume + (isTarget(a) ? step : -step));
+		// Relative: +N% of the app's own volume for the target, -N% for every other app.
+		const target = clamp01(a.volume * (isTarget(a) ? 1 + step : 1 - step));
 		await ar.setVolume(a.processID, target);
 		boosted.set(a.processID, target - a.volume);
 	}
@@ -156,7 +184,7 @@ async function render(ctx) {
 	const s = boostCtx.get(ctx);
 	if (!s) return;
 	const on = isOn(ctx);
-	const exe = on ? boostedExe : s.target; // ON: show what is actually boosted (also for "focused")
+	const exe = on ? boostedExe : (s.target || fgExe); // ON: what is actually boosted; "focused": live focus
 	const icon = exe ? await iconFor(exe, theme(s)) : null;
 	const img = keyImage({ on, icon, step: parseInt(s.step, 10) || DEFAULT_STEP, settings: s });
 	if (lastImage.get(ctx) === img) return;
@@ -187,4 +215,4 @@ sd.on('message', (d) => { let m; try { m = JSON.parse(d.toString()); } catch { r
 sd.on('close', () => { log('Stream Deck socket closed; exiting'); process.exit(0); });
 sd.on('error', (e) => log('Stream Deck socket error', e && e.message));
 // Picks up icons of apps that start playing later; unchanged images are not resent.
-setInterval(renderAll, 3000);
+setInterval(() => { renderAll(); if (fgPending) matchFocus().catch(() => {}); }, 3000);
