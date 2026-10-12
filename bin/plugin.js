@@ -1,8 +1,10 @@
 'use strict';
 /*
  * Foreground Boost - Stream Deck plugin backend (Node 20, CommonJS).
- * Toggle: the focused app +15, every other app -15; press again to undo the delta
- * actually applied. State survives restarts via a lock file. Also starts the bundled
+ * Toggle: each key boosts the focused app or a chosen app (+N%, every other app -N%);
+ * one boost at a time, the same key again undoes the delta actually applied. State
+ * survives restarts via a lock file. Key images are drawn live (app icon, amount),
+ * in the default Stream Deck look or Duotone Essentials colours. Also starts the bundled
  * VolumeProxy (Foreground.exe); the exe holds a named mutex, so only one copy runs
  * even when several plugins launch it.
  */
@@ -13,6 +15,8 @@ const { spawn } = require('child_process');
 const koffi = require('koffi');
 const WebSocket = require('ws');
 const { AudioRouter, baseName, clamp01 } = require('./lib/audiorouter');
+const { decodeIcoToRgba, rgbaToPngBase64 } = require('./lib/icondib');
+const { keyImage } = require('./lib/keyimage');
 
 const log = (...a) => { try { console.log(new Date().toISOString(), ...a); } catch {} };
 process.on('uncaughtException', (e) => log('uncaught', e && e.stack || e));
@@ -63,14 +67,16 @@ const boostCtx = new Map(); // context -> settings { target: '' = focused app | 
 // One boost at a time. owner = context of the key that turned it on.
 let boosted = null; // pid -> applied delta while on; null when off
 let owner = null;
+let boostedExe = ''; // exe actually boosted, for the key image
 try {
 	const j = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
 	boosted = new Map(Array.isArray(j) ? j : j.deltas); // array = lock from before per-key targets
 	owner = Array.isArray(j) ? null : j.owner;
+	boostedExe = (!Array.isArray(j) && j.exe) || '';
 } catch {}
 
 function saveBoost() {
-	try { if (boosted) fs.writeFileSync(LOCK_FILE, JSON.stringify({ owner, deltas: [...boosted] })); else fs.rmSync(LOCK_FILE, { force: true }); }
+	try { if (boosted) fs.writeFileSync(LOCK_FILE, JSON.stringify({ owner, exe: boostedExe, deltas: [...boosted] })); else fs.rmSync(LOCK_FILE, { force: true }); }
 	catch (e) { log('boost lock', e.message); }
 }
 
@@ -83,11 +89,11 @@ async function toggleBoost(ctx) {
 			const d = boosted.get(a.processID);
 			if (d) { a.volume = clamp01(a.volume - d); await ar.setVolume(a.processID, a.volume); } // keep local copy current for a switch
 		}
-		boosted = null; owner = null;
+		boosted = null; owner = null; boostedExe = '';
 	}
 	if (!wasOwner) await applyBoost(ctx, apps);
 	saveBoost();
-	for (const c of boostCtx.keys()) setState(c);
+	renderAll();
 }
 
 async function applyBoost(ctx, apps) {
@@ -104,6 +110,7 @@ async function applyBoost(ctx, apps) {
 	}
 	if (!apps.some(isTarget)) { showAlert(ctx); return; } // target app not playing audio
 	boosted = new Map(); owner = ctx;
+	boostedExe = apps.find(isTarget).executableFile;
 	for (const a of apps) {
 		const target = clamp01(a.volume + (isTarget(a) ? step : -step));
 		await ar.setVolume(a.processID, target);
@@ -123,6 +130,39 @@ async function sendAppsToPI(ctx) {
 	sdSend({ event: 'sendToPropertyInspector', context: ctx, payload: { apps: list } });
 }
 
+/* ------------------------------------------------------------ Key image */
+const isOn = (ctx) => !!boosted && (owner === ctx || !boostCtx.has(owner));
+const iconCache = new Map(); // exe -> base64 png or null
+const lastImage = new Map(); // context -> data URI last sent
+
+async function iconFor(exe) {
+	const key = baseName(exe);
+	if (iconCache.has(key)) return iconCache.get(key);
+	const a = (await ar.listApps()).find((x) => baseName(x.executableFile) === key);
+	if (!a) return null; // not cached: retry once the app has a session
+	let png = null;
+	try {
+		const ico = await ar.getIcon(a.processID);
+		const dec = ico && decodeIcoToRgba(Buffer.from(ico, 'base64'));
+		if (dec) png = rgbaToPngBase64(dec.width, dec.height, dec.rgba);
+	} catch (e) { log('icon', e.message); }
+	iconCache.set(key, png);
+	return png;
+}
+
+async function render(ctx) {
+	const s = boostCtx.get(ctx);
+	if (!s) return;
+	const on = isOn(ctx);
+	const exe = on ? boostedExe : s.target; // ON: show what is actually boosted (also for "focused")
+	const icon = exe ? await iconFor(exe) : null;
+	const img = keyImage({ on, icon, step: parseInt(s.step, 10) || DEFAULT_STEP, settings: s });
+	if (lastImage.get(ctx) === img) return;
+	lastImage.set(ctx, img);
+	sdSend({ event: 'setImage', context: ctx, payload: { image: img, target: 0 } });
+}
+const renderAll = () => { for (const c of boostCtx.keys()) render(c).catch((e) => log('render', e.message)); };
+
 /* ---------------------------------------------------------- Stream Deck IO */
 const args = {};
 for (let i = 2; i < process.argv.length; i += 2) args[process.argv[i].replace(/^-/, '')] = process.argv[i + 1];
@@ -130,12 +170,10 @@ let sd = null;
 
 function sdSend(o) { try { if (sd && sd.readyState === WebSocket.OPEN) sd.send(JSON.stringify(o)); } catch (e) { log('sdSend', e.message); } }
 const showAlert = (ctx) => sdSend({ event: 'showAlert', context: ctx });
-const setState = (ctx) => sdSend({ event: 'setState', context: ctx, payload: { state: boosted && (owner === ctx || !boostCtx.has(owner)) ? 1 : 0 } });
 
 function onEvent({ event, context, payload }) {
-	if (event === 'willAppear') { boostCtx.set(context, (payload && payload.settings) || {}); setState(context); }
-	else if (event === 'didReceiveSettings') boostCtx.set(context, (payload && payload.settings) || {});
-	else if (event === 'willDisappear') boostCtx.delete(context);
+	if (event === 'willAppear' || event === 'didReceiveSettings') { boostCtx.set(context, (payload && payload.settings) || {}); lastImage.delete(context); render(context).catch((e) => log('render', e.message)); }
+	else if (event === 'willDisappear') { boostCtx.delete(context); lastImage.delete(context); }
 	else if (event === 'propertyInspectorDidAppear' || (event === 'sendToPlugin' && payload && payload.kind === 'refreshApps')) sendAppsToPI(context).catch((e) => log('apps', e.message));
 	else if (event === 'keyDown') toggleBoost(context).catch((e) => { log('boost', e.message); showAlert(context); });
 }
@@ -146,3 +184,5 @@ sd.on('open', () => { sdSend({ event: args.registerEvent, uuid: args.pluginUUID 
 sd.on('message', (d) => { let m; try { m = JSON.parse(d.toString()); } catch { return; } onEvent(m); });
 sd.on('close', () => { log('Stream Deck socket closed; exiting'); process.exit(0); });
 sd.on('error', (e) => log('Stream Deck socket error', e && e.message));
+// Picks up icons of apps that start playing later; unchanged images are not resent.
+setInterval(renderAll, 3000);

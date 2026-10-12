@@ -13,18 +13,42 @@
 			</select>
 		</div>
 		<div class="sdpi-item">
-			<div class="sdpi-item-label"></div>
+			<div class="sdpi-item-label empty"></div>
 			<button class="sdpi-item-value" id="refresh" style="max-width:140px;">Refresh list</button>
 		</div>
 		<div class="sdpi-item">
 			<div class="sdpi-item-label">Amount</div>
 			<div class="sdpi-item-value" style="display:flex;align-items:center;gap:8px;">
-				<span>1</span><input type="range" id="step" min="1" max="100" value="15" /><span>100</span>
+				<input type="range" id="step" min="1" max="100" value="15" style="flex:1;min-width:0;width:auto;" />
 				<span id="stepVal" style="min-width:3em;">±15%</span>
 			</div>
 		</div>
 		<div class="sdpi-item">
-			<div class="sdpi-item-label"></div>
+			<div class="sdpi-item-label">Style</div>
+			<select class="sdpi-item-value select" id="style">
+				<option value="default">Default</option>
+				<option value="duotone">Duotone</option>
+			</select>
+		</div>
+		<div class="sdpi-item" id="duoItem" style="display:none;">
+			<div class="sdpi-item-label">Colour</div>
+			<select class="sdpi-item-value select" id="duoPreset">
+				<option value="blue">Blue</option>
+				<option value="orange">Orange</option>
+				<option value="purple">Purple</option>
+				<option value="red">Red</option>
+				<option value="custom">Custom…</option>
+			</select>
+		</div>
+		<div class="sdpi-item" type="color" id="duoCustom" style="display:none;">
+			<div class="sdpi-item-label">Custom</div>
+			<div class="sdpi-item-value" style="display:flex;gap:8px;align-items:center;">
+				<input type="color" id="duoBg" value="#3b4c66" title="Background" />
+				<input type="color" id="duoAccent" value="#67a4ff" title="Accent" />
+			</div>
+		</div>
+		<div class="sdpi-item">
+			<div class="sdpi-item-label empty"></div>
 			<div class="sdpi-item-value" style="opacity:.7;">The chosen app goes up, every other app goes down. One boost at a time: another Foreground Boost key switches to its own boost, this key again turns it off.</div>
 		</div>
 	</div>
@@ -39,6 +63,7 @@
 			uuid = inUUID;
 			try { settings = JSON.parse(actionInfo).payload.settings || {}; } catch { settings = {}; }
 			$('step').value = settings.step != null ? settings.step : 15; show();
+			styleToUi();
 			fillApps([]);
 			ws = new WebSocket('ws://127.0.0.1:' + port);
 			ws.onopen = () => ws.send(JSON.stringify({ event: registerEvent, uuid: inUUID }));
@@ -75,6 +100,17 @@
 			e.preventDefault();
 			if (ws && ws.readyState === 1) ws.send(JSON.stringify({ event: 'sendToPlugin', action: 'com.xenside.foregroundboost.toggle', context: uuid, payload: { kind: 'refreshApps' } }));
 		});
+		// Style: "default" (stock Stream Deck look) or "duotone" (Duotone Essentials colours).
+		function styleToUi() {
+			$('style').value = settings.style === 'duotone' ? 'duotone' : 'default';
+			$('duoPreset').value = settings.duoPreset || 'blue';
+			$('duoBg').value = settings.duoBg || '#3b4c66';
+			$('duoAccent').value = settings.duoAccent || '#67a4ff';
+			const duo = $('style').value === 'duotone';
+			$('duoItem').style.display = duo ? '' : 'none';
+			$('duoCustom').style.display = duo && $('duoPreset').value === 'custom' ? '' : 'none';
+		}
+		for (const id of ['style', 'duoPreset', 'duoBg', 'duoAccent']) $(id).addEventListener('change', () => { settings[id] = $(id).value; styleToUi(); save(); });
 		$('step').addEventListener('input', show);
 		$('step').addEventListener('change', () => { settings.step = parseInt($('step').value, 10); save(); });
 	</script>
