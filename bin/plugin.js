@@ -57,36 +57,70 @@ function focused() {
 /* ---------------------------------------------------------------- Boost */
 const ar = new AudioRouter(log);
 const PROXY_NAME = 'foreground.exe'; // follows the focused app by itself: never touch it
-const STEP = 0.15;
+const DEFAULT_STEP = 15; // percent; per-key "step" setting from the inspector
 const LOCK_FILE = path.join(__dirname, 'foregroundboost.lock.json');
-const boostCtx = new Set();
+const boostCtx = new Map(); // context -> settings { target: '' = focused app | exe path, step }
+// One boost at a time. owner = context of the key that turned it on.
 let boosted = null; // pid -> applied delta while on; null when off
-try { boosted = new Map(JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'))); } catch {}
+let owner = null;
+try {
+	const j = JSON.parse(fs.readFileSync(LOCK_FILE, 'utf8'));
+	boosted = new Map(Array.isArray(j) ? j : j.deltas); // array = lock from before per-key targets
+	owner = Array.isArray(j) ? null : j.owner;
+} catch {}
 
 function saveBoost() {
-	try { if (boosted) fs.writeFileSync(LOCK_FILE, JSON.stringify([...boosted])); else fs.rmSync(LOCK_FILE, { force: true }); }
+	try { if (boosted) fs.writeFileSync(LOCK_FILE, JSON.stringify({ owner, deltas: [...boosted] })); else fs.rmSync(LOCK_FILE, { force: true }); }
 	catch (e) { log('boost lock', e.message); }
 }
 
+// Press: undo the active boost, if any; then, unless this key owned it, apply this key's boost.
 async function toggleBoost(ctx) {
 	const apps = (await ar.listApps()).filter((a) => baseName(a.executableFile) !== PROXY_NAME);
-	if (!apps.length) { showAlert(ctx); return; }
+	const wasOwner = boosted && (owner === ctx || !boostCtx.has(owner));
 	if (boosted) {
-		for (const a of apps) { const d = boosted.get(a.processID); if (d) await ar.setVolume(a.processID, a.volume - d); }
-		boosted = null;
+		for (const a of apps) {
+			const d = boosted.get(a.processID);
+			if (d) { a.volume = clamp01(a.volume - d); await ar.setVolume(a.processID, a.volume); } // keep local copy current for a switch
+		}
+		boosted = null; owner = null;
+	}
+	if (!wasOwner) await applyBoost(ctx, apps);
+	saveBoost();
+	for (const c of boostCtx.keys()) setState(c);
+}
+
+async function applyBoost(ctx, apps) {
+	const s = boostCtx.get(ctx) || {};
+	const step = (parseInt(s.step, 10) || DEFAULT_STEP) / 100;
+	let isTarget;
+	if (s.target) {
+		const want = baseName(s.target);
+		isTarget = (a) => baseName(a.executableFile) === want;
 	} else {
 		// Match the exe too: browsers/Discord play audio from a child process, not the window's.
 		const fg = focused();
-		const isFg = (a) => a.processID === fg.pid || (!!fg.exe && baseName(a.executableFile) === fg.exe);
-		boosted = new Map();
-		for (const a of apps) {
-			const target = clamp01(a.volume + (isFg(a) ? STEP : -STEP));
-			await ar.setVolume(a.processID, target);
-			boosted.set(a.processID, target - a.volume);
-		}
+		isTarget = (a) => a.processID === fg.pid || (!!fg.exe && baseName(a.executableFile) === fg.exe);
 	}
-	saveBoost();
-	for (const c of boostCtx) setState(c);
+	if (!apps.some(isTarget)) { showAlert(ctx); return; } // target app not playing audio
+	boosted = new Map(); owner = ctx;
+	for (const a of apps) {
+		const target = clamp01(a.volume + (isTarget(a) ? step : -step));
+		await ar.setVolume(a.processID, target);
+		boosted.set(a.processID, target - a.volume);
+	}
+}
+
+async function sendAppsToPI(ctx) {
+	const seen = new Set(), list = [];
+	for (const a of await ar.listApps()) {
+		const k = baseName(a.executableFile);
+		if (!k || k === PROXY_NAME || seen.has(k)) continue;
+		seen.add(k);
+		list.push({ displayName: a.displayName || k.replace(/.exe$/, ''), executableFile: a.executableFile });
+	}
+	list.sort((x, y) => x.displayName.localeCompare(y.displayName));
+	sdSend({ event: 'sendToPropertyInspector', context: ctx, payload: { apps: list } });
 }
 
 /* ---------------------------------------------------------- Stream Deck IO */
@@ -96,11 +130,13 @@ let sd = null;
 
 function sdSend(o) { try { if (sd && sd.readyState === WebSocket.OPEN) sd.send(JSON.stringify(o)); } catch (e) { log('sdSend', e.message); } }
 const showAlert = (ctx) => sdSend({ event: 'showAlert', context: ctx });
-const setState = (ctx) => sdSend({ event: 'setState', context: ctx, payload: { state: boosted ? 1 : 0 } });
+const setState = (ctx) => sdSend({ event: 'setState', context: ctx, payload: { state: boosted && (owner === ctx || !boostCtx.has(owner)) ? 1 : 0 } });
 
-function onEvent({ event, context }) {
-	if (event === 'willAppear') { boostCtx.add(context); setState(context); }
+function onEvent({ event, context, payload }) {
+	if (event === 'willAppear') { boostCtx.set(context, (payload && payload.settings) || {}); setState(context); }
+	else if (event === 'didReceiveSettings') boostCtx.set(context, (payload && payload.settings) || {});
 	else if (event === 'willDisappear') boostCtx.delete(context);
+	else if (event === 'propertyInspectorDidAppear' || (event === 'sendToPlugin' && payload && payload.kind === 'refreshApps')) sendAppsToPI(context).catch((e) => log('apps', e.message));
 	else if (event === 'keyDown') toggleBoost(context).catch((e) => { log('boost', e.message); showAlert(context); });
 }
 

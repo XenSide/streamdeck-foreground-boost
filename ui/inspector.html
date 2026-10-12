@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="utf-8" />
+	<link rel="stylesheet" href="sdpi.css" />
+</head>
+<body>
+	<div class="sdpi-wrapper">
+		<div class="sdpi-item">
+			<div class="sdpi-item-label">Boost</div>
+			<select class="sdpi-item-value select" id="target">
+				<option value="">Focused app</option>
+			</select>
+		</div>
+		<div class="sdpi-item">
+			<div class="sdpi-item-label"></div>
+			<button class="sdpi-item-value" id="refresh" style="max-width:140px;">Refresh list</button>
+		</div>
+		<div class="sdpi-item">
+			<div class="sdpi-item-label">Amount</div>
+			<div class="sdpi-item-value" style="display:flex;align-items:center;gap:8px;">
+				<span>1</span><input type="range" id="step" min="1" max="50" value="15" /><span>50</span>
+				<span id="stepVal" style="min-width:3em;">±15%</span>
+			</div>
+		</div>
+		<div class="sdpi-item">
+			<div class="sdpi-item-label"></div>
+			<div class="sdpi-item-value" style="opacity:.7;">The chosen app goes up, every other app goes down. One boost at a time: another Foreground Boost key switches to its own boost, this key again turns it off.</div>
+		</div>
+	</div>
+
+	<script>
+		let ws, uuid, settings = {};
+		const $ = (id) => document.getElementById(id);
+		const show = () => { $('stepVal').textContent = '±' + $('step').value + '%'; };
+		const save = () => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ event: 'setSettings', context: uuid, payload: settings })); };
+
+		window.connectElgatoStreamDeckSocket = (port, inUUID, registerEvent, info, actionInfo) => {
+			uuid = inUUID;
+			try { settings = JSON.parse(actionInfo).payload.settings || {}; } catch { settings = {}; }
+			$('step').value = settings.step != null ? settings.step : 15; show();
+			fillApps([]);
+			ws = new WebSocket('ws://127.0.0.1:' + port);
+			ws.onopen = () => ws.send(JSON.stringify({ event: registerEvent, uuid: inUUID }));
+			ws.onmessage = (e) => {
+				let m; try { m = JSON.parse(e.data); } catch { return; }
+				if (m.event === 'sendToPropertyInspector' && m.payload && m.payload.apps) fillApps(m.payload.apps);
+			};
+		};
+
+		function fillApps(apps) {
+			const sel = $('target'), cur = settings.target || '';
+			sel.innerHTML = '<option value="">Focused app</option>';
+			let found = !cur;
+			for (const a of apps) {
+				const o = new Option(a.displayName, a.executableFile, false, a.executableFile === cur);
+				o.dataset.name = a.displayName;
+				found = found || a.executableFile === cur;
+				sel.add(o);
+			}
+			if (!found) {
+				const o = new Option((settings.targetName || cur) + ' (no audio now)', cur, false, true);
+				o.dataset.name = settings.targetName || '';
+				sel.add(o);
+			}
+		}
+
+		$('target').addEventListener('change', () => {
+			const o = $('target').selectedOptions[0];
+			settings.target = o.value;
+			settings.targetName = o.value ? o.dataset.name : '';
+			save();
+		});
+		$('refresh').addEventListener('click', (e) => {
+			e.preventDefault();
+			if (ws && ws.readyState === 1) ws.send(JSON.stringify({ event: 'sendToPlugin', action: 'com.xenside.foregroundboost.toggle', context: uuid, payload: { kind: 'refreshApps' } }));
+		});
+		$('step').addEventListener('input', show);
+		$('step').addEventListener('change', () => { settings.step = parseInt($('step').value, 10); save(); });
+	</script>
+</body>
+</html>
