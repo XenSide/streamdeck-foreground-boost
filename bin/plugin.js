@@ -18,7 +18,18 @@ const log = (...a) => { try { console.log(new Date().toISOString(), ...a); } cat
 process.on('uncaughtException', (e) => log('uncaught', e && e.stack || e));
 process.on('unhandledRejection', (e) => log('unhandledRejection', e && e.stack || e));
 
-try { spawn(path.join(__dirname, 'Foreground.exe'), [], { detached: true, stdio: 'ignore' }).unref(); }
+// Bundled VolumeProxy, always run from one fixed path so mixers that match by full exe path
+// (Volume Controller NEO) keep finding it, whichever plugin starts first. The exe holds a
+// named mutex, so only one copy runs.
+const PROXY_EXE = path.join(process.env.LOCALAPPDATA, 'VolumeProxy', 'Foreground.exe');
+try {
+	const src = path.join(__dirname, 'Foreground.exe');
+	if (!fs.existsSync(PROXY_EXE) || fs.statSync(PROXY_EXE).size !== fs.statSync(src).size) {
+		fs.mkdirSync(path.dirname(PROXY_EXE), { recursive: true });
+		fs.copyFileSync(src, PROXY_EXE);
+	}
+} catch (e) { log('VolumeProxy copy', e.message); } // EBUSY: a copy is already running
+try { spawn(PROXY_EXE, [], { detached: true, stdio: 'ignore' }).unref(); }
 catch (e) { log('VolumeProxy spawn', e.message); }
 
 /* ---------------------------------------------------------- Focused app */
@@ -45,7 +56,7 @@ function focused() {
 
 /* ---------------------------------------------------------------- Boost */
 const ar = new AudioRouter(log);
-const PROXY_EXE = 'foreground.exe'; // follows the focused app by itself: never touch it
+const PROXY_NAME = 'foreground.exe'; // follows the focused app by itself: never touch it
 const STEP = 0.15;
 const LOCK_FILE = path.join(__dirname, 'foregroundboost.lock.json');
 const boostCtx = new Set();
@@ -58,7 +69,7 @@ function saveBoost() {
 }
 
 async function toggleBoost(ctx) {
-	const apps = (await ar.listApps()).filter((a) => baseName(a.executableFile) !== PROXY_EXE);
+	const apps = (await ar.listApps()).filter((a) => baseName(a.executableFile) !== PROXY_NAME);
 	if (!apps.length) { showAlert(ctx); return; }
 	if (boosted) {
 		for (const a of apps) { const d = boosted.get(a.processID); if (d) await ar.setVolume(a.processID, a.volume - d); }
