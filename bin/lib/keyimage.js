@@ -5,8 +5,6 @@
 const { theme } = require('./theme');
 
 const FONT = 'font-family="Segoe UI,Arial,sans-serif" font-weight="700"';
-// Bold Segoe UI advance widths at 22px (generous: Stream Deck draws it wider than browsers).
-const textWidth = (s) => [...s].reduce((w, c) => w + (c === '%' ? 20 : 13.2), 0);
 
 // "Focused window" glyph: four corner brackets around a dot, in the 64px icon box.
 const focusGlyph = (frame, dot) => `<g fill="none" stroke="${frame}" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">`
@@ -18,15 +16,16 @@ const focusGlyph = (frame, dot) => `<g fill="none" stroke="${frame}" stroke-widt
 function keyImage({ on = false, icon = null, step = 15, settings }) {
 	const t = theme(settings);
 	const label = `+${step}%`;
-	const arrowW = 12, gap = 5, w = arrowW + gap + textWidth(label), x0 = 72 - w / 2;
+	// Fixed-width pill: Stream Deck draws Segoe UI wider than browsers, so never size to the text.
+	// Arrow on the left, label centred in the rest; "+100%" still fits with margin.
 	const ink = on ? t.bg : t.dim; // label colour: on the pill when on, muted when off
 	const p = ['<svg xmlns="http://www.w3.org/2000/svg" width="144" height="144" viewBox="0 0 144 144">'];
 	p.push(`<rect width="144" height="144" fill="${t.bg}"/>`);
 	if (icon) p.push(`<image x="40" y="14" width="64" height="64" opacity="${on ? 1 : 0.45}" href="data:image/png;base64,${icon}"/>`);
 	else p.push(`<g opacity="${on ? 1 : 0.45}">${focusGlyph(t.duo ? t.sec : t.fg, t.fg)}</g>`);
-	if (on) p.push(`<rect x="${x0 - 12}" y="96" width="${w + 24}" height="34" rx="17" fill="${t.fg}"/>`);
-	p.push(`<path d="M${x0} 118l6-7 6 7" fill="none" stroke="${ink}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>`);
-	p.push(`<text x="${x0 + arrowW + gap}" y="121" ${FONT} font-size="22" fill="${ink}">${label}</text>`);
+	if (on) p.push(`<rect x="12" y="95" width="120" height="36" rx="18" fill="${t.fg}"/>`);
+	p.push(`<path d="M26 118l6-7 6 7" fill="none" stroke="${ink}" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>`);
+	p.push(`<text x="84" y="121" text-anchor="middle" ${FONT} font-size="22" fill="${ink}">${label}</text>`);
 	p.push('</svg>');
 	return 'data:image/svg+xml;base64,' + Buffer.from(p.join('')).toString('base64');
 }
