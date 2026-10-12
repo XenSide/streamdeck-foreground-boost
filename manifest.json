@@ -2,7 +2,7 @@
 	"Name": "Foreground Boost",
 	"Version": "0.1.0.0",
 	"Author": "xenside",
-	"Description": "Toggle: the focused app +15, every other app -15. Press again to undo. Bundles VolumeProxy (Foreground.exe) and starts it if it is not already running.",
+	"Description": "Toggle: boost the focused app or a chosen app, lower every other app. One boost at a time; press again to undo.",
 	"Category": "Foreground Boost",
 	"CategoryIcon": "imgs/plugin/icon",
 	"Icon": "imgs/plugin/icon",
@@ -26,13 +26,20 @@
 			"UUID": "com.xenside.foregroundboost.toggle",
 			"Name": "Foreground Boost",
 			"Icon": "imgs/actions/boost/icon",
-			"Tooltip": "Toggle: the focused app +15, every other app -15. Press again to undo.",
-			"Controllers": ["Keypad"],
+			"Tooltip": "Toggle: boost the focused app or a chosen app, lower every other app. One boost at a time; press again to undo.",
+			"Controllers": [
+				"Keypad"
+			],
 			"DisableAutomaticStates": true,
 			"States": [
-				{ "Image": "imgs/actions/boost/off" },
-				{ "Image": "imgs/actions/boost/on" }
-			]
+				{
+					"Image": "imgs/actions/boost/off"
+				},
+				{
+					"Image": "imgs/actions/boost/on"
+				}
+			],
+			"PropertyInspectorPath": "ui/inspector.html"
 		}
 	]
 }
