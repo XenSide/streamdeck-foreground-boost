@@ -1,0 +1,5 @@
+node_modules/
+logs/
+*.lock.json
+# Built from https://github.com/XenSide/VolumeProxy (cargo build --release)
+bin/Foreground.exe
