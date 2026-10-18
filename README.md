@@ -1,6 +1,10 @@
+![Foreground Boost](docs/cover.png)
+
 # Foreground Boost
 
 Stream Deck toggle: focused app +15, every other app -15; press again to undo. Bundles VolumeProxy.
+
+![Foreground Boost keys and settings](docs/screenshot.png)
 
 ## Install
 
